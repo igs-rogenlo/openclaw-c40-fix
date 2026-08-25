@@ -639,7 +639,7 @@ suite.define(() => {
         "chat.metadata",
         "chat.startup",
         "session.visibility.set",
-        "session.members.list",
+        "session.members.listEvidence",
         "session.members.add",
         "session.members.remove",
       ],
@@ -647,7 +647,7 @@ suite.define(() => {
       historyMessages: [{ role: "assistant", content: [{ type: "text", text: "Ready." }] }],
       methodResponses: {
         "sessions.list": sessions,
-        "session.members.list": {
+        "session.members.listEvidence": {
           sessionKey: "agent:main:ada",
           members: [],
           identities: [],
@@ -707,7 +707,7 @@ suite.define(() => {
     await currentPage.getByText("Publish draft", { exact: true }).click();
     await gateway.waitForRequest("session.visibility.set");
     await expect.poll(() => dropdown.getAttribute("open")).toBeNull();
-    expect(await gateway.getRequests("session.members.list")).toHaveLength(0);
+    expect(await gateway.getRequests("session.members.listEvidence")).toHaveLength(0);
 
     const message = "visibility change rejected";
     await gateway.rejectDeferred("session.visibility.set", {
@@ -737,7 +737,7 @@ suite.define(() => {
         "chat.metadata",
         "chat.startup",
         "session.visibility.set",
-        "session.members.list",
+        "session.members.listEvidence",
         "session.members.add",
         "session.members.remove",
       ],
@@ -745,7 +745,7 @@ suite.define(() => {
       historyMessages: [{ role: "assistant", content: [{ type: "text", text: "Ready." }] }],
       methodResponses: {
         "sessions.list": sessions,
-        "session.members.list": {
+        "session.members.listEvidence": {
           sessionKey: "agent:main:ada",
           members: [],
           identities: [{ type: "human", id: "profile-bob", label: "Bob" }],
@@ -758,7 +758,7 @@ suite.define(() => {
     await currentPage.goto(`${suite.server?.baseUrl ?? ""}chat`);
     await currentPage.getByText("Ready.", { exact: true }).waitFor();
     await currentPage.getByLabel("Session sharing").click();
-    await gateway.waitForRequest("session.members.list");
+    await gateway.waitForRequest("session.members.listEvidence");
     const dropdown = currentPage.locator(".chat-pane__sharing-menu");
     const publish = dropdown.locator('wa-dropdown-item[value="visibility:shared"]');
     await publish.waitFor();
@@ -816,7 +816,7 @@ suite.define(() => {
       featureMethods: [
         "chat.metadata",
         "chat.startup",
-        "session.members.list",
+        "session.members.listEvidence",
         "session.members.add",
         "session.members.remove",
         "session.visibility.set",
@@ -854,7 +854,7 @@ suite.define(() => {
       ],
       methodResponses: {
         "sessions.list": sessions,
-        "session.members.list": {
+        "session.members.listEvidence": {
           sessionKey: "agent:main:ada",
           members: [{ identityId: longMemberId, addedBy: "profile-ada", addedAt: 1 }],
           identities: [...humanIdentities, ...nonHumanIdentities],
@@ -867,7 +867,7 @@ suite.define(() => {
     await currentPage.goto(`${suite.server?.baseUrl ?? ""}chat`);
     await currentPage.getByText("Ready.", { exact: true }).waitFor();
     await currentPage.locator(".chat-pane__sharing-trigger").click();
-    await gateway.waitForRequest("session.members.list");
+    await gateway.waitForRequest("session.members.listEvidence");
     const dropdown = currentPage.locator(".chat-pane__sharing-menu");
     await dropdown.locator('wa-dropdown-item[value="member:profile-member-0"]').waitFor();
     await dropdown.evaluate(async (element) => {
