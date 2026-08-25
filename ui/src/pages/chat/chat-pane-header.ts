@@ -554,11 +554,21 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
       sessionMenuAction:
         row && this.state
           ? html`<openclaw-chat-header-session-menu
-              .sessionLabel=${normalizeOptionalString(row.label) ??
-              normalizeOptionalString(this.paneTitle) ??
-              row.key}
+              .session=${{
+                label:
+                  normalizeOptionalString(row.label) ??
+                  normalizeOptionalString(this.paneTitle) ??
+                  row.key,
+                sessionId: row.sessionId ?? null,
+                isChild: Boolean(row.spawnedBy),
+                pinned: row.pinned === true,
+                unread: row.unread === true,
+                archived: row.archived === true,
+                category: normalizeOptionalString(row.category) ?? null,
+                icon: normalizeOptionalString(row.icon) ?? null,
+                categoryClearReturnsToGroups: false,
+              }}
               .worktreePath=${row.execNode || !isNativeLocalGateway() ? null : workspace.root}
-              .archived=${row.archived === true}
               .onboarding=${this.onboarding}
               .preferencesBrowserOnly=${this.context.runtimeConfig?.state.connected &&
               this.context.runtimeConfig.canPatch === false}
@@ -567,6 +577,7 @@ export abstract class ChatPaneHeader extends ChatPaneDiscussion {
               .panelActions=${panelMenuActions}
               .layoutActions=${layoutMenuActions}
               .statusActions=${this.compactHeaderStatusActions()}
+              .groups=${this.context.sessions?.state?.groups ?? []}
               .ownerOptions=${ownerOptions}
               .selfOwner=${selfOwner}
               .currentOwnerId=${row.owner?.actor.id ?? null}
