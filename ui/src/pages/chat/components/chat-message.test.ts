@@ -3241,7 +3241,7 @@ describe("grouped chat rendering", () => {
     });
   });
 
-  it("renders assistant MEDIA attachments, voice-note badge, and reply preview", async () => {
+  it("renders assistant MEDIA attachments, voice-note semantics, and reply preview", async () => {
     const container = document.body.appendChild(document.createElement("div"));
     container.dataset.mediaPlayerTestFixture = "";
     const onOpenImage = vi.fn();
@@ -3273,9 +3273,8 @@ describe("grouped chat rendering", () => {
     expect(expectElement(audioPlayer, "audio", HTMLAudioElement).src).toBe(
       "https://example.com/voice.ogg",
     );
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Voice note",
-    );
+    expect((audioPlayer as unknown as { voiceNote?: boolean }).voiceNote).toBe(true);
+    expect(container.querySelector(".chat-assistant-attachment-badge")).toBeNull();
   });
 
   it("renders a clickable quoted preview for structured user replies", () => {
@@ -3505,7 +3504,7 @@ describe("grouped chat rendering", () => {
     expect(expectElement(player, "audio", HTMLAudioElement).getAttribute("src")).toBe(
       `${ticketedUrl}&playback=1`,
     );
-    expect((player as unknown as { serverDurationMs?: number }).serverDurationMs).toBeUndefined();
+    expect((player as unknown as { serverDurationMs?: number }).serverDurationMs).toBe(2_345);
   });
 
   it("keeps a valid managed media ticket while refresh retries", async () => {
@@ -3894,12 +3893,12 @@ describe("grouped chat rendering", () => {
       await vi.waitFor(() => {
         expect(
           container.querySelector(
-            ".chat-assistant-attachment-card--blocked .chat-assistant-attachment-card__reason",
+            ".chat-assistant-attachment-card--blocked .chat-assistant-attachment-card__status-meta",
           )?.textContent,
         ).toContain(reason);
       });
       expect(container.querySelector("audio")).toBeNull();
-      expect(container.querySelector(".chat-assistant-attachment-card__link")).toBeNull();
+      expect(container.querySelector(".chat-assistant-attachment-card__download")).toBeNull();
     },
   );
 
@@ -3924,19 +3923,11 @@ describe("grouped chat rendering", () => {
     expect(card.querySelector(".chat-assistant-video-fallback")?.textContent).toContain(
       "Can't play this format — download instead.",
     );
-    expect(card.querySelector<HTMLAnchorElement>(".chat-assistant-video-fallback a")?.href).toBe(
-      "https://example.com/clip.mp4",
+    const download = card.querySelector<HTMLAnchorElement>(
+      ".chat-assistant-attachment-card__download",
     );
-    expect(
-      card
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
-        ?.getAttribute("download"),
-    ).toBe("clip.mp4");
-    expect(
-      card
-        .querySelector<HTMLAnchorElement>(".chat-assistant-video-fallback a")
-        ?.getAttribute("download"),
-    ).toBe("clip.mp4");
+    expect(download?.href).toBe("https://example.com/clip.mp4");
+    expect(download?.getAttribute("download")).toBe("clip.mp4");
   });
 
   it("renders a text document as a compact card without fetching a preview", () => {
@@ -4212,9 +4203,9 @@ describe("grouped chat rendering", () => {
       );
 
     renderMessage();
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Checking...",
-    );
+    expect(
+      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent?.trim(),
+    ).toBe("Checking...");
     await flushAssistantAttachmentAvailabilityChecks();
 
     const expectedMetaUrl = `/openclaw/__openclaw__/assistant-media?source=${encodeURIComponent(source).replaceAll("%20", "+")}&meta=1`;
@@ -4261,9 +4252,9 @@ describe("grouped chat rendering", () => {
       );
 
     rerender();
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Checking...",
-    );
+    expect(
+      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent?.trim(),
+    ).toBe("Checking...");
 
     const expectedMetaUrl = `/openclaw/__openclaw__/assistant-media?source=${encodeURIComponent(source)}&meta=1`;
     const [, fetchInit] = requireFetchCallForUrl(fetchMock, expectedMetaUrl);
@@ -4272,9 +4263,9 @@ describe("grouped chat rendering", () => {
 
     expect(fetchInit?.signal).toBeInstanceOf(AbortSignal);
     expect(fetchInit?.signal?.aborted).toBe(true);
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Unavailable",
-    );
+    expect(
+      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
+    ).toContain("Unavailable");
   });
 
   it("refreshes local assistant media tickets before expiry without another render", async () => {
@@ -4431,9 +4422,9 @@ describe("grouped chat rendering", () => {
 
     renderWithToken(null);
     await flushAssistantAttachmentAvailabilityChecks();
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Unavailable",
-    );
+    expect(
+      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
+    ).toContain("Unavailable");
 
     renderWithToken("test-token-placeholder");
     await flushAssistantAttachmentAvailabilityChecks();
@@ -4475,9 +4466,9 @@ describe("grouped chat rendering", () => {
     rerender();
     await flushAssistantAttachmentAvailabilityChecks();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Unavailable",
-    );
+    expect(
+      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
+    ).toContain("Unavailable");
 
     await vi.advanceTimersByTimeAsync(5_001);
     await flushAssistantAttachmentAvailabilityChecks();
@@ -4526,9 +4517,9 @@ describe("grouped chat rendering", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
-    expect(container.querySelector(".chat-assistant-attachment-badge")?.textContent?.trim()).toBe(
-      "Unavailable",
-    );
+    expect(
+      container.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
+    ).toContain("Unavailable");
 
     rerender();
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -4556,7 +4547,7 @@ describe("grouped chat rendering", () => {
     ).toBe("/media/inbound/test-image.png");
     expect(
       container
-        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__link")
+        .querySelector<HTMLAnchorElement>(".chat-assistant-attachment-card__download")
         ?.getAttribute("href"),
     ).toBe("/__openclaw__/media/test-doc.pdf");
     expect(container.querySelector(".chat-assistant-attachment-card--blocked")).toBeNull();
@@ -4576,14 +4567,14 @@ describe("grouped chat rendering", () => {
       },
     );
 
-    expect(container.querySelector(".chat-assistant-attachment-card__link")).toBeNull();
+    expect(container.querySelector(".chat-assistant-attachment-card__download")).toBeNull();
     const blocked = container.querySelector(".chat-assistant-attachment-card--blocked");
     expect(blocked?.querySelector(".chat-assistant-attachment-card__title")?.textContent).toBe(
       "private.pdf",
     );
     expect(
-      blocked?.querySelector(".chat-assistant-attachment-card__reason")?.textContent?.trim(),
-    ).toBe("Outside allowed folders");
+      blocked?.querySelector(".chat-assistant-attachment-card__status-meta")?.textContent,
+    ).toContain("Outside allowed folders");
     expect(container.querySelector(".chat-text")?.textContent?.trim()).toBe("Blocked\nDone");
   });
 
@@ -4875,8 +4866,8 @@ describe("grouped chat rendering", () => {
       sessionKey: "agent:main:main",
       artifactId,
     });
-    expect(container.querySelectorAll(".chat-assistant-attachment-card__action")).toHaveLength(2);
-    expect(container.querySelector(".chat-assistant-attachment-card__expand svg")).not.toBeNull();
+    expect(container.querySelector(".chat-message-image")).not.toBeNull();
+    expect(container.querySelector(".chat-assistant-attachment-card")).toBeNull();
   });
 
   it("carries the known attachment kind into the sidebar when MIME is absent", () => {
@@ -4961,7 +4952,7 @@ describe("grouped chat rendering", () => {
     container.remove();
   });
 
-  it("downloads a managed image from the compact preview header", async () => {
+  it("downloads a managed image from its pure-image actions", async () => {
     const attachmentId = crypto.randomUUID();
     const artifactId = `artifact_managed_image_${attachmentId}`;
     const source = `/api/chat/media/outgoing/agent%3Amain%3Amain/${attachmentId}/full`;
@@ -4998,13 +4989,11 @@ describe("grouped chat rendering", () => {
     await vi.waitFor(() => expect(container.querySelector(".chat-message-image")).not.toBeNull());
     expect(fetchMock).toHaveBeenCalledWith(thumbnailUrl, expect.anything());
 
-    expectElement(
-      container,
-      ".chat-assistant-attachment-card__download",
-      HTMLButtonElement,
-    ).click();
+    const imageActions = container.querySelectorAll<HTMLButtonElement>(".chat-image-action");
+    expect(imageActions).toHaveLength(3);
+    imageActions[1]?.click();
     await vi.waitFor(() => expect(click).toHaveBeenCalledOnce());
-    expect(clickedDownloads[0]).toBe("image.png");
+    expect(clickedDownloads[0]).toBe("Ticketed image.png");
 
     expect(fetchMock.mock.calls.filter((call: unknown[]) => call[0] === ticketedUrl)).toHaveLength(
       1,
