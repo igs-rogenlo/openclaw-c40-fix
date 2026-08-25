@@ -4043,7 +4043,7 @@ describe("grouped chat rendering", () => {
     const message = createAssistantMessage(
       [
         createAttachmentBlock(
-          "https://example.com/truncated.csv",
+          "/truncated.csv",
           "document",
           "truncated.csv",
           "text/csv",
@@ -4088,7 +4088,7 @@ describe("grouped chat rendering", () => {
     const message = createAssistantMessage(
       [
         createAttachmentBlock(
-          "https://example.com/endless.csv",
+          "/endless.csv",
           "document",
           "endless.csv",
           "text/csv",
@@ -4140,7 +4140,7 @@ describe("grouped chat rendering", () => {
     const message = createAssistantMessage(
       [
         createAttachmentBlock(
-          "https://example.com/one-giant-chunk.csv",
+          "/one-giant-chunk.csv",
           "document",
           "one-giant-chunk.csv",
           "text/csv",
