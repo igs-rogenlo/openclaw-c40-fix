@@ -14,6 +14,14 @@ import {
 type ChatPaneSidebarLayout = Parameters<typeof isSidebarSlotVisible>[0];
 type ChatPaneGatewaySnapshot = Parameters<typeof isDesktopPanelAvailable>[0];
 
+export function releaseAttachmentWorkspaceOwner(state: ChatPageHost, slot: SidebarSlotId): void {
+  // Attachment previews temporarily own Files content. Release that owner
+  // with the slot so reopening Files restores the session workspace.
+  if (slot === "workspace" && state.sidebarContent?.kind === "attachment") {
+    state.sidebarContent = null;
+  }
+}
+
 /** Builds the two rail models and their shared sidebar slot controls. */
 export function createChatPaneRails(params: {
   state: ChatPageHost;
@@ -37,6 +45,7 @@ export function createChatPaneRails(params: {
     if (slot === "companion") {
       params.setObserverVisibility(false);
     }
+    releaseAttachmentWorkspaceOwner(state, slot);
     state.updateSidebarLayout(closeSlot(state.sidebarLayout, slot));
   };
   const togglePanelSlot = (slot: SidebarSlotId) =>
