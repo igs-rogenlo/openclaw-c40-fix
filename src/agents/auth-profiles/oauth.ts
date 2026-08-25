@@ -28,7 +28,7 @@ import {
 } from "../../secrets/runtime-degraded-state.js";
 import { normalizeOptionalSecretInput } from "../../utils/normalize-secret-input.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
-import { authProfilesLog } from "./constants.js";
+import { authProfilesLog, CLAUDE_CLI_PROFILE_ID } from "./constants.js";
 import {
   evaluateStoredCredentialEligibility,
   resolveTokenExpiryState,
@@ -380,6 +380,11 @@ export async function resolveApiKeyForProfile(
   const { cfg, store, profileId } = params;
   const storedProfile = store.profiles[profileId];
   if (!storedProfile) {
+    return null;
+  }
+  // Claude owns this native login slot. Legacy persisted copies must never
+  // resolve, refresh, or leave OpenClaw as bearer tokens.
+  if (profileId === CLAUDE_CLI_PROFILE_ID) {
     return null;
   }
   const configForRefResolution = cfg ?? getRuntimeConfig();

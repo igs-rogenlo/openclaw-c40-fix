@@ -58,10 +58,6 @@ import { hasAgentRosterProperty, resolveAgentWorkspaceDir } from "../agent-scope
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { hasUsableOAuthCredential } from "../auth-profiles/credential-state.js";
 import { externalCliDiscoveryForProviderAuth } from "../auth-profiles/external-cli-discovery.js";
-import {
-  isSafeToUseExternalCliCredential,
-  readExternalCliBootstrapCredential,
-} from "../auth-profiles/external-cli-sync.js";
 import { buildOAuthRefreshFailureLoginCommand } from "../auth-profiles/oauth-refresh-failure.js";
 import { resolveApiKeyForProfile } from "../auth-profiles/oauth.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
@@ -199,7 +195,6 @@ const defaultPrepareDeps = {
   claudeCliSessionTranscriptHasContent,
   claudeCliSessionTranscriptHasOrphanedToolUse,
   getCliLiveSessionGeneration,
-  readExternalCliBootstrapCredential,
   resolveApiKeyForProfile,
   loadManifestModelCatalog,
 };
@@ -641,45 +636,17 @@ export async function prepareCliRunContext(
       authCredential = authStore.profiles[effectiveAuthProfileId];
     }
   }
-  // Claude CLI-provider OAuth credentials exist only as imports of the host's
-  // own `claude` login; Claude owns that single-use refresh-token family.
-  // Forwarding a snapshot goes stale within hours and blocks the subprocess
-  // from refreshing itself, so verify the live login matches the selected
-  // identity and let Claude authenticate natively (it refreshes in place).
-  const nativeClaudeCliCredential =
+  // Claude owns its native login and single-use refresh-token family. Never
+  // preflight, refresh, or forward OpenClaw's snapshot; the installed Claude
+  // process validates and refreshes its own current login.
+  const retiredClaudeCliCredential =
     backendAuthPolicy?.nativePassthroughProviderId !== undefined &&
     authCredential?.type === "oauth" &&
     authCredential.provider === backendAuthPolicy.nativePassthroughProviderId
       ? authCredential
       : undefined;
-  if (effectiveAuthProfileId && authStore && nativeClaudeCliCredential) {
-    const authProfileId = effectiveAuthProfileId;
-    const liveNativeLogin = prepareDeps.readExternalCliBootstrapCredential({
-      store: authStore,
-      profileId: authProfileId,
-      credential: nativeClaudeCliCredential,
-    });
-    if (!liveNativeLogin) {
-      throw buildCliAuthProfileResolutionError({
-        backendId: backendResolved.id,
-        profileId: authProfileId,
-        provider: nativeClaudeCliCredential.provider,
-        agentDir,
-        failure: { kind: "native-login-missing" },
-      });
-    }
-    if (!isSafeToUseExternalCliCredential(nativeClaudeCliCredential, liveNativeLogin)) {
-      throw buildCliAuthProfileResolutionError({
-        backendId: backendResolved.id,
-        profileId: authProfileId,
-        provider: nativeClaudeCliCredential.provider,
-        agentDir,
-        failure: { kind: "native-login-identity-mismatch" },
-      });
-    }
-    // Spawn with no forwarded credential. The local-login auth epoch then keys
-    // the session to the host account (identity-hashed, rotation-stable), and
-    // the next store load re-adopts whatever Claude rotates.
+  if (retiredClaudeCliCredential) {
+    effectiveAuthProfileId = undefined;
     authCredential = undefined;
   } else if (
     effectiveAuthProfileId &&

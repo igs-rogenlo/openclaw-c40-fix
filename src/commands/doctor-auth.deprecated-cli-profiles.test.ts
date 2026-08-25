@@ -12,8 +12,16 @@ const resolvePluginProvidersMock = vi.fn<() => ProviderPlugin[]>(() => []);
 const authProfileStoreMock = vi.hoisted(() => ({
   store: { version: 1, profiles: {} } as AuthProfileStore,
 }));
+const candidateMocks = vi.hoisted(() => ({
+  candidates: [{ agentDir: undefined, authPath: "/tmp/shared/openclaw-agent.sqlite" }] as Array<{
+    agentDir?: string;
+    authPath: string;
+  }>,
+  stores: new Map<string | undefined, AuthProfileStore>(),
+}));
 const repairMocks = vi.hoisted(() => ({
   repairOAuthProfileIdMismatch: vi.fn(),
+  removeAuthProfilesAcrossOwnerStores: vi.fn(async () => true),
 }));
 
 vi.mock("../plugins/providers.runtime.js", () => ({
@@ -24,8 +32,25 @@ vi.mock("../agents/auth-profiles/repair.js", () => ({
   repairOAuthProfileIdMismatch: repairMocks.repairOAuthProfileIdMismatch,
 }));
 
+vi.mock("../agents/auth-profiles.js", () => ({
+  removeAuthProfilesAcrossOwnerStores: repairMocks.removeAuthProfilesAcrossOwnerStores,
+}));
+
+vi.mock("../agents/auth-profiles/persisted.js", () => ({
+  loadPersistedAuthProfileStore: (agentDir?: string) =>
+    candidateMocks.stores.has(agentDir)
+      ? candidateMocks.stores.get(agentDir)
+      : agentDir === undefined
+        ? authProfileStoreMock.store
+        : undefined,
+}));
+
+vi.mock("./doctor-auth-legacy-paths.js", () => ({
+  listAuthProfileRepairCandidates: () => candidateMocks.candidates,
+}));
+
 vi.mock("../agents/auth-profiles/store.js", () => ({
-  ensureAuthProfileStore: () => authProfileStoreMock.store,
+  ensureAuthProfileStoreWithoutExternalProfiles: () => authProfileStoreMock.store,
 }));
 
 vi.mock("../../packages/terminal-core/src/note.js", () => ({
@@ -72,22 +97,28 @@ beforeEach(() => {
   resolvePluginProvidersMock.mockReset();
   resolvePluginProvidersMock.mockReturnValue([]);
   authProfileStoreMock.store = { version: 1, profiles: {} };
+  candidateMocks.candidates = [
+    { agentDir: undefined, authPath: "/tmp/shared/openclaw-agent.sqlite" },
+  ];
+  candidateMocks.stores.clear();
   repairMocks.repairOAuthProfileIdMismatch.mockReset();
   repairMocks.repairOAuthProfileIdMismatch.mockReturnValue({
     config: {},
     changes: [],
     migrated: false,
   });
+  repairMocks.removeAuthProfilesAcrossOwnerStores.mockReset();
+  repairMocks.removeAuthProfilesAcrossOwnerStores.mockResolvedValue(true);
 });
 
 describe("maybeRepairLegacyOAuthProfileIds", () => {
-  it("skips provider loading when config has no legacy OAuth profiles", async () => {
+  it("skips profile repair when config has no legacy OAuth profiles", async () => {
     const cfg = { channels: { telegram: { enabled: true } } } as OpenClawConfig;
 
     const next = await maybeRepairLegacyOAuthProfileIds(cfg, makePrompter(true));
 
     expect(next).toBe(cfg);
-    expect(resolvePluginProvidersMock).not.toHaveBeenCalled();
+    expect(resolvePluginProvidersMock).toHaveBeenCalledOnce();
     expect(repairMocks.repairOAuthProfileIdMismatch).not.toHaveBeenCalled();
   });
 
@@ -174,6 +205,93 @@ describe("maybeRepairLegacyOAuthProfileIds", () => {
     expect(repairedProfile?.mode).toBe("oauth");
     expect(repairedProfile?.email).toBe("user@example.com");
     expect(auth.order?.anthropic).toEqual(["anthropic:user@example.com"]);
+  });
+
+  it("removes a provider-declared retired auth profile and config references", async () => {
+    authProfileStoreMock.store = {
+      version: 1,
+      profiles: {
+        "anthropic:claude-cli": {
+          type: "oauth",
+          provider: "anthropic",
+          access: "copied-native-access",
+          refresh: "copied-native-refresh",
+          expires: Date.now() + 60_000,
+        },
+        "anthropic:managed": {
+          type: "api_key",
+          provider: "anthropic",
+          key: "managed-key",
+        },
+      },
+    };
+    resolvePluginProvidersMock.mockReturnValue([
+      {
+        id: "anthropic",
+        label: "Anthropic",
+        auth: [],
+        deprecatedProfileIds: ["anthropic:claude-cli"],
+      },
+    ]);
+
+    const next = await maybeRepairLegacyOAuthProfileIds(
+      {
+        auth: {
+          profiles: {
+            "anthropic:claude-cli": { provider: "claude-cli", mode: "oauth" },
+            "anthropic:managed": { provider: "anthropic", mode: "api_key" },
+          },
+          order: {
+            anthropic: ["anthropic:claude-cli", "anthropic:managed"],
+          },
+        },
+      } as OpenClawConfig,
+      makePrompter(true),
+    );
+
+    expect(next.auth?.profiles).toEqual({
+      "anthropic:managed": { provider: "anthropic", mode: "api_key" },
+    });
+    expect(next.auth?.order?.anthropic).toEqual(["anthropic:managed"]);
+    expect(repairMocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledWith({
+      agentDir: undefined,
+      profileIds: ["anthropic:claude-cli"],
+    });
+  });
+
+  it("removes a retired profile from a secondary agent store", async () => {
+    const secondaryAgentDir = "/tmp/state/agents/secondary/agent";
+    candidateMocks.candidates = [
+      { agentDir: undefined, authPath: "/tmp/shared/openclaw-agent.sqlite" },
+      { agentDir: secondaryAgentDir, authPath: `${secondaryAgentDir}/openclaw-agent.sqlite` },
+    ];
+    candidateMocks.stores.set(secondaryAgentDir, {
+      version: 1,
+      profiles: {
+        "anthropic:claude-cli": {
+          type: "oauth",
+          provider: "anthropic",
+          access: "copied-native-access",
+          refresh: "copied-native-refresh",
+          expires: Date.now() + 60_000,
+        },
+      },
+    });
+    resolvePluginProvidersMock.mockReturnValue([
+      {
+        id: "anthropic",
+        label: "Anthropic",
+        auth: [],
+        deprecatedProfileIds: ["anthropic:claude-cli"],
+      },
+    ]);
+
+    await maybeRepairLegacyOAuthProfileIds({} as OpenClawConfig, makePrompter(true));
+
+    expect(repairMocks.removeAuthProfilesAcrossOwnerStores).toHaveBeenCalledWith({
+      agentDir: secondaryAgentDir,
+      profileIds: ["anthropic:claude-cli"],
+    });
   });
 
   it("strips provider-controlled terminal escapes from repair prompts", async () => {

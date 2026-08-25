@@ -22,7 +22,6 @@ export function getOAuthProviderRuntimeMocks() {
 }
 
 vi.mock("../cli-credentials.js", () => ({
-  readClaudeCliCredentialsCached: () => null,
   readCodexCliCredentialsCached: () => null,
   readMiniMaxCliCredentialsCached: () => null,
   resetCliCredentialCachesForTest: () => undefined,

@@ -5,18 +5,15 @@ import type {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { readClaudeCliCredentialsForSetup, readClaudeCliCredentialsForSetupNonInteractive } =
-  vi.hoisted(() => ({
-    readClaudeCliCredentialsForSetup: vi.fn(),
-    readClaudeCliCredentialsForSetupNonInteractive: vi.fn(),
-  }));
+const { probeClaudeCliAuthStatus } = vi.hoisted(() => ({
+  probeClaudeCliAuthStatus: vi.fn(),
+}));
 
 vi.mock("./cli-auth-seam.js", async (importActual) => {
   const actual = await importActual<typeof import("./cli-auth-seam.js")>();
   return {
     ...actual,
-    readClaudeCliCredentialsForSetup,
-    readClaudeCliCredentialsForSetupNonInteractive,
+    probeClaudeCliAuthStatus,
   };
 });
 
@@ -27,8 +24,7 @@ const { createTestWizardPrompter, registerSingleProviderPlugin } =
 const { default: anthropicPlugin } = await import("./index.js");
 
 beforeEach(() => {
-  readClaudeCliCredentialsForSetup.mockReset();
-  readClaudeCliCredentialsForSetupNonInteractive.mockReset();
+  probeClaudeCliAuthStatus.mockReset();
 });
 
 afterAll(() => {
@@ -480,7 +476,7 @@ describe("anthropic cli migration", () => {
   });
 
   it("registered cli auth tells users to run claude auth login when local auth is missing", async () => {
-    readClaudeCliCredentialsForSetup.mockReturnValue(null);
+    probeClaudeCliAuthStatus.mockReturnValue({ status: "missing" });
     const method = await resolveAnthropicCliAuthMethod();
 
     await expect(method.run(createProviderAuthContext())).rejects.toThrow(
@@ -492,14 +488,7 @@ describe("anthropic cli migration", () => {
   });
 
   it("registered cli auth returns the same migration result as the builder", async () => {
-    const credential = {
-      type: "oauth",
-      provider: "anthropic",
-      access: "access-token",
-      refresh: "refresh-token",
-      expires: Date.now() + 60_000,
-    } as const;
-    readClaudeCliCredentialsForSetup.mockReturnValue(credential);
+    probeClaudeCliAuthStatus.mockReturnValue({ status: "available" });
     const method = await resolveAnthropicCliAuthMethod();
     const config = {
       agents: {
@@ -518,80 +507,17 @@ describe("anthropic cli migration", () => {
     };
 
     await expect(method.run(createProviderAuthContext(config))).resolves.toEqual(
-      buildAnthropicCliMigrationResult(config, credential),
+      buildAnthropicCliMigrationResult(config),
     );
   });
 
-  it("stores a claude-cli oauth profile when Claude CLI credentials are available", () => {
-    const result = buildAnthropicCliMigrationResult(
-      {},
-      {
-        type: "oauth",
-        provider: "anthropic",
-        access: "access-token",
-        refresh: "refresh-token",
-        expires: 123,
-      },
-    );
-
-    expect(result.profiles).toEqual([
-      {
-        profileId: "anthropic:claude-cli",
-        credential: {
-          type: "oauth",
-          provider: "claude-cli",
-          access: "access-token",
-          refresh: "refresh-token",
-          expires: 123,
-        },
-      },
-    ]);
-  });
-
-  it("stores a claude-cli token profile when Claude CLI only exposes a bearer token", () => {
-    const result = buildAnthropicCliMigrationResult(
-      {},
-      {
-        type: "token",
-        provider: "anthropic",
-        token: "bearer-token",
-        expires: 123,
-      },
-    );
-
-    expect(result.profiles).toEqual([
-      {
-        profileId: "anthropic:claude-cli",
-        credential: {
-          type: "token",
-          provider: "claude-cli",
-          token: "bearer-token",
-          expires: 123,
-        },
-      },
-    ]);
-  });
-
-  it("does not persist a synthetic profile for Claude CLI apiKeyHelper auth", () => {
-    const result = buildAnthropicCliMigrationResult(
-      {},
-      { type: "api_key_helper", provider: "anthropic", helperHash: "helper-hash" },
-    );
-
+  it("does not copy native Claude credentials into OpenClaw", () => {
+    const result = buildAnthropicCliMigrationResult({});
     expect(result.profiles).toEqual([]);
   });
 
   it("registered non-interactive cli auth keeps anthropic fallbacks and selects claude-cli runtime", async () => {
-    readClaudeCliCredentialsForSetupNonInteractive.mockReturnValue({
-      status: "available",
-      credential: {
-        type: "oauth",
-        provider: "anthropic",
-        access: "access-token",
-        refresh: "refresh-token",
-        expires: Date.now() + 60_000,
-      },
-    });
+    probeClaudeCliAuthStatus.mockReturnValue({ status: "available" });
     const method = await resolveAnthropicCliAuthMethod();
     const config = {
       agents: {
@@ -638,7 +564,7 @@ describe("anthropic cli migration", () => {
   });
 
   it("registered non-interactive cli auth reports missing local auth and exits cleanly", async () => {
-    readClaudeCliCredentialsForSetupNonInteractive.mockReturnValue({ status: "missing" });
+    probeClaudeCliAuthStatus.mockReturnValue({ status: "missing" });
     const method = await resolveAnthropicCliAuthMethod();
     const ctx = createProviderAuthMethodNonInteractiveContext();
 
@@ -653,15 +579,15 @@ describe("anthropic cli migration", () => {
   });
 
   it("registered non-interactive cli auth reports stored credentials that need interaction", async () => {
-    readClaudeCliCredentialsForSetupNonInteractive.mockReturnValue({ status: "unreadable" });
+    probeClaudeCliAuthStatus.mockReturnValue({ status: "unreadable" });
     const method = await resolveAnthropicCliAuthMethod();
     const ctx = createProviderAuthMethodNonInteractiveContext();
 
     await expect(method.runNonInteractive?.(ctx)).resolves.toBeNull();
     expect(ctx.runtime.error).toHaveBeenCalledWith(
       [
-        'Auth choice "anthropic-cli" found Claude CLI credentials on this host, but they could not be read non-interactively.',
-        "Re-run this command without --non-interactive, or use --auth-choice setup-token / --anthropic-api-key <key>.",
+        'Auth choice "anthropic-cli" could not verify the installed Claude CLI login.',
+        "Run claude auth status, then retry.",
       ].join("\n"),
     );
     expect(ctx.runtime.exit).toHaveBeenCalledWith(1);

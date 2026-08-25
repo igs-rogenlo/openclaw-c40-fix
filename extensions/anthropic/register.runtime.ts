@@ -17,6 +17,7 @@ import {
   applyAuthProfileConfig,
   type AuthProfileStore,
   buildTokenProfileId,
+  CLAUDE_CLI_PROFILE_ID,
   createProviderApiKeyAuthMethod,
   listProfilesForProvider,
   type OpenClawConfig as ProviderAuthConfig,
@@ -968,8 +969,8 @@ function buildAnthropicAuthDoctorHint(params: {
 }
 
 async function runAnthropicCliMigration(ctx: ProviderAuthContext): Promise<ProviderAuthResult> {
-  const credential = claudeCliAuth.readClaudeCliCredentialsForSetup();
-  if (!credential) {
+  const authStatus = claudeCliAuth.probeClaudeCliAuthStatus();
+  if (authStatus.status !== "available") {
     throw new Error(
       [
         "Claude CLI is not authenticated on this host.",
@@ -977,7 +978,7 @@ async function runAnthropicCliMigration(ctx: ProviderAuthContext): Promise<Provi
       ].join("\n"),
     );
   }
-  return buildAnthropicCliMigrationResult(ctx.config, credential);
+  return buildAnthropicCliMigrationResult(ctx.config);
 }
 
 async function runAnthropicCliMigrationNonInteractive(ctx: {
@@ -985,13 +986,13 @@ async function runAnthropicCliMigrationNonInteractive(ctx: {
   runtime: ProviderAuthContext["runtime"];
   agentDir?: string;
 }): Promise<ProviderAuthContext["config"] | null> {
-  const credentialResult = claudeCliAuth.readClaudeCliCredentialsForSetupNonInteractive();
-  if (credentialResult.status !== "available") {
+  const authStatus = claudeCliAuth.probeClaudeCliAuthStatus();
+  if (authStatus.status !== "available") {
     const error =
-      credentialResult.status === "unreadable"
+      authStatus.status === "unreadable"
         ? [
-            'Auth choice "anthropic-cli" found Claude CLI credentials on this host, but they could not be read non-interactively.',
-            "Re-run this command without --non-interactive, or use --auth-choice setup-token / --anthropic-api-key <key>.",
+            'Auth choice "anthropic-cli" could not verify the installed Claude CLI login.',
+            `Run ${formatCliCommand("claude auth status")}, then retry.`,
           ]
         : [
             'Auth choice "anthropic-cli" requires Claude CLI auth on this host.',
@@ -1002,7 +1003,7 @@ async function runAnthropicCliMigrationNonInteractive(ctx: {
     return null;
   }
 
-  const result = buildAnthropicCliMigrationResult(ctx.config, credentialResult.credential);
+  const result = buildAnthropicCliMigrationResult(ctx.config);
   const currentDefaults = ctx.config.agents?.defaults;
   const currentModel = currentDefaults?.model;
   const currentFallbacks =
@@ -1041,6 +1042,7 @@ export function buildAnthropicProvider(): ProviderPlugin {
   return {
     id: providerId,
     label: "Anthropic",
+    deprecatedProfileIds: [CLAUDE_CLI_PROFILE_ID],
     docsPath: "/providers/models",
     hookAliases: [CLAUDE_CLI_BACKEND_ID],
     envVars: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
