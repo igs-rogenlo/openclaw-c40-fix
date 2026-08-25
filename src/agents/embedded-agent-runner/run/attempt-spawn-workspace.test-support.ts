@@ -28,7 +28,7 @@ import type {
   MessagingToolSend,
   MessagingToolSourceReplyPayload,
 } from "../../embedded-agent-messaging.types.js";
-import type { AgentMessage, StreamFn } from "../../runtime/index.js";
+import type { AgentMessage, AgentToolUpdateCallback, StreamFn } from "../../runtime/index.js";
 import {
   getModelRegistryRuntime,
   initializeModelRegistryRuntime,
@@ -133,8 +133,12 @@ function createSubscriptionMock(): SubscriptionMock {
     getLatestMcpConnectAction: () => undefined,
     toolMetas: [] as Array<{ toolName: string; meta?: string; asyncStarted?: boolean }>,
     runToolLifecycle: async <T>(toolParams: {
-      execute: (onImplementationStart: () => void) => Promise<T>;
-    }) => await toolParams.execute(() => undefined),
+      execute: (onImplementationStart: () => void, onUpdate: AgentToolUpdateCallback) => Promise<T>;
+    }) =>
+      await toolParams.execute(
+        () => undefined,
+        () => undefined,
+      ),
     unsubscribe: () => {},
     setTerminalLifecycleMeta: () => {},
     waitForCompactionRetry: async () => {},

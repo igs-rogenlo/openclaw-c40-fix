@@ -1,8 +1,19 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  OPENCLAW_GATEWAY_INJECTED_MODEL,
+  OPENCLAW_TRANSCRIPT_ARTIFACT_API,
+  OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
+} from "../shared/transcript-only-openclaw-assistant.js";
 import { transferMcpCodeModeGuestResult } from "./mcp-content.js";
 import type { AgentMessage, AgentToolResult } from "./runtime/index.js";
+import type { SessionManager } from "./sessions/index.js";
 import { toToolSearchJsonSafe } from "./tool-search-json.js";
 import type { ToolSearchTargetTranscriptProjection } from "./tool-search-types.js";
+
+type ToolSearchTargetTranscriptPair = [
+  Extract<AgentMessage, { role: "assistant" }>,
+  Extract<AgentMessage, { role: "toolResult" }>,
+];
 
 function readMessageToolResultId(message: AgentMessage): string | undefined {
   const role: unknown = message.role;
@@ -61,7 +72,7 @@ function textFromToolSearchProjectionResult(result: unknown, isError: boolean): 
 
 function buildToolSearchTargetTranscriptMessages(
   projection: ToolSearchTargetTranscriptProjection,
-): AgentMessage[] {
+): ToolSearchTargetTranscriptPair {
   const input = toToolSearchJsonSafe(projection.input);
   const timestamp = projection.timestamp ?? Date.now();
   const resultRecord = isRecord(projection.result) ? projection.result : undefined;
@@ -75,8 +86,11 @@ function buildToolSearchTargetTranscriptMessages(
           },
         ];
   return [
+    // SAFETY: this synthetic assistant has the canonical tool-call shape; provider
+    // identity is attached only for durable artifacts below.
     {
       role: "assistant",
+      parentToolCallId: projection.parentToolCallId,
       content: [
         {
           type: "toolCall",
@@ -88,16 +102,74 @@ function buildToolSearchTargetTranscriptMessages(
       ],
       stopReason: "toolUse",
       timestamp,
-    } as unknown as AgentMessage,
+    } as unknown as Extract<AgentMessage, { role: "assistant" }>,
     {
       role: "toolResult",
+      parentToolCallId: projection.parentToolCallId,
       toolCallId: projection.toolCallId,
       toolName: projection.toolName,
       isError: projection.isError,
       content: resultContent,
       timestamp,
-    } as unknown as AgentMessage,
+    } as Extract<AgentMessage, { role: "toolResult" }>,
   ];
+}
+
+/** Build a canonical durable pair that replay filters as display-only evidence. */
+function buildToolSearchTargetTranscriptArtifactMessages(
+  projection: ToolSearchTargetTranscriptProjection,
+): ToolSearchTargetTranscriptPair {
+  const [toolCall, toolResult] = buildToolSearchTargetTranscriptMessages(projection);
+  return [
+    Object.assign({}, toolCall, {
+      api: OPENCLAW_TRANSCRIPT_ARTIFACT_API,
+      provider: OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
+      model: OPENCLAW_GATEWAY_INJECTED_MODEL,
+    }),
+    Object.assign({}, toolResult, {
+      api: OPENCLAW_TRANSCRIPT_ARTIFACT_API,
+      provider: OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
+      model: OPENCLAW_GATEWAY_INJECTED_MODEL,
+    }),
+  ];
+}
+
+/**
+ * Persist nested target activity immediately after its wrapper result. The
+ * terminal model assistant is appended later and remains the authoritative leaf.
+ */
+export function installToolSearchTargetTranscriptPersistence(params: {
+  sessionManager: SessionManager;
+  projections: readonly ToolSearchTargetTranscriptProjection[];
+}): () => void {
+  const originalAppend = params.sessionManager.appendMessage.bind(params.sessionManager);
+  const persisted = new Set<ToolSearchTargetTranscriptProjection>();
+  const wrappedAppend: SessionManager["appendMessage"] = function (message, options) {
+    const entryId = originalAppend(message, options);
+    const parentToolCallId = readMessageToolResultId(message);
+    if (!entryId || !parentToolCallId) {
+      return entryId;
+    }
+    for (const projection of params.projections) {
+      if (persisted.has(projection) || projection.parentToolCallId !== parentToolCallId) {
+        continue;
+      }
+      const [toolCall, toolResult] = buildToolSearchTargetTranscriptArtifactMessages(projection);
+      const toolCallEntryId = originalAppend(toolCall);
+      if (!toolCallEntryId) {
+        continue;
+      }
+      originalAppend(toolResult);
+      persisted.add(projection);
+    }
+    return entryId;
+  };
+  params.sessionManager.appendMessage = wrappedAppend;
+  return () => {
+    if (params.sessionManager.appendMessage === wrappedAppend) {
+      params.sessionManager.appendMessage = originalAppend;
+    }
+  };
 }
 
 export function projectToolSearchTargetTranscriptMessages(

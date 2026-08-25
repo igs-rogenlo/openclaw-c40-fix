@@ -4,7 +4,7 @@
 export const OPENCLAW_TRANSCRIPT_ARTIFACT_API = "openclaw-transcript" as const;
 export const OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER = "openclaw" as const;
 export const OPENCLAW_DELIVERY_MIRROR_MODEL = "delivery-mirror" as const;
-const OPENCLAW_GATEWAY_INJECTED_MODEL = "gateway-injected" as const;
+export const OPENCLAW_GATEWAY_INJECTED_MODEL = "gateway-injected" as const;
 
 const TRANSCRIPT_ONLY_OPENCLAW_ASSISTANT_MODELS = new Set<string>([
   OPENCLAW_DELIVERY_MIRROR_MODEL,
@@ -32,6 +32,21 @@ export function isTranscriptOnlyOpenClawAssistantModel(provider: unknown, model:
   );
 }
 
+/** Returns true for any OpenClaw-authored transcript artifact message. */
+export function isTranscriptOnlyOpenClawMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return false;
+  }
+  const role = Reflect.get(message, "role");
+  if (role !== "assistant" && role !== "toolResult") {
+    return false;
+  }
+  return isTranscriptOnlyOpenClawAssistantModel(
+    Reflect.get(message, "provider"),
+    Reflect.get(message, "model"),
+  );
+}
+
 /**
  * Returns true when the message is an OpenClaw-authored transcript artifact
  * that must not be replayed to providers.
@@ -53,7 +68,7 @@ export function isTranscriptOnlyOpenClawAssistantMessage(message: unknown): bool
   if (entry.role !== "assistant") {
     return false;
   }
-  if (isTranscriptOnlyOpenClawAssistantModel(entry.provider, entry.model)) {
+  if (isTranscriptOnlyOpenClawMessage(entry)) {
     return true;
   }
   return isOpenClawDeliveryMirrorMarker(entry.openclawDeliveryMirror);
