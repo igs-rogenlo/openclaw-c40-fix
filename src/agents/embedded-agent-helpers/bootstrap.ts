@@ -155,13 +155,28 @@ function isUserBootstrapFile(fileName: string | undefined): boolean {
   return fileName?.toLowerCase() === USER_BOOTSTRAP_FILENAME.toLowerCase();
 }
 
+/**
+ * Mandatory-policy vocabulary for the AGENTS.md policy digest.
+ *
+ * The Latin alternation keeps `\b`. The CJK alternation must not have it: CJK
+ * codepoints are not `\w`, so a word boundary can never match beside them, and
+ * adding CJK terms inside the `\b(?:…)\b` group would have no effect at all.
+ *
+ * The high-priority CJK group is deliberately narrower than the candidate group.
+ * Candidate membership only admits a line to the pool; `highPriority` decides
+ * what survives a tight digest budget, so widening it to the softer terms makes
+ * nearly every mandatory line high priority and the ranking stops discriminating.
+ */
+const POLICY_DIGEST_CANDIDATE_PATTERN =
+  /\b(?:AGENTS\.md|scoped|required|must|never|do not|before subtree|read scoped|owner|security|secret|credential|test|validation|command|commit|push|github|pr)\b|(?:🔴|禁止|嚴禁|不得|絕不|絕對不|切勿|必須|務必|一律|紅線)/iu;
+const POLICY_DIGEST_HIGH_PRIORITY_PATTERN =
+  /\b(?:AGENTS\.md|scoped|required|must|never|do not|before subtree|read scoped|security|secret|credential)\b|(?:🔴|禁止|嚴禁|不得|絕不|絕對不|切勿)/iu;
+
 function isPolicyDigestCandidate(line: string): boolean {
   if (/^(?:#{1,6}|\s*[-*+]|\s*\d+[.)])\s+\S/u.test(line)) {
     return true;
   }
-  return /\b(?:AGENTS\.md|scoped|required|must|never|do not|before subtree|read scoped|owner|security|secret|credential|test|validation|command|commit|push|github|pr)\b/iu.test(
-    line,
-  );
+  return POLICY_DIGEST_CANDIDATE_PATTERN.test(line);
 }
 
 function normalizePolicyDigestLine(line: string): string {
@@ -218,8 +233,6 @@ function trimAgentsBootstrapContent(trimmed: string, maxChars: number): TrimBoot
   // Budget refinement reselects these distinct source-ordered lines without reparsing them.
   const candidates: PolicyDigestCandidate[] = [];
   if (!(digestBudget <= 0)) {
-    const highPriorityPattern =
-      /\b(?:AGENTS\.md|scoped|required|must|never|do not|before subtree|read scoped|security|secret|credential)\b/iu;
     let lastProseLine: string | null = null;
     for (const sourceLine of trimmed.split(/\r?\n/u)) {
       const line = normalizePolicyDigestLine(sourceLine);
@@ -234,7 +247,7 @@ function trimAgentsBootstrapContent(trimmed: string, maxChars: number): TrimBoot
         candidates.push({
           // Select framing and its candidate as one indivisible text unit.
           text: lastProseLine === null ? line : `${lastProseLine}\n${line}`,
-          highPriority: highPriorityPattern.test(line),
+          highPriority: POLICY_DIGEST_HIGH_PRIORITY_PATTERN.test(line),
         });
         lastProseLine = null;
       } else {

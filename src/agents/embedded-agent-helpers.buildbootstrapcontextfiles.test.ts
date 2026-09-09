@@ -173,6 +173,33 @@ describe("buildBootstrapContextFiles", () => {
     expect(result?.content).toContain(requiredScopedInstruction);
     expect(result?.content).toContain("[...truncated, read AGENTS.md for full content...]");
   });
+  it("keeps non-Latin policy digest lines from oversized AGENTS.md middle content", () => {
+    // CJK codepoints are not \w, so a \b-anchored keyword list can never match a
+    // Chinese policy line: without a CJK alternation these lines are neither
+    // digest candidates nor high priority, and a tight budget drops them first.
+    const mandatoryChineseBullet = "- 🔴 禁止在對話中索取使用者密碼。";
+    const mandatoryChineseProse = "本平台所有 agent 一律不得直接寫入生產資料庫。";
+    const content = [
+      "# Root policy",
+      "A".repeat(900),
+      "## 政策",
+      mandatoryChineseBullet,
+      mandatoryChineseProse,
+      "B".repeat(700),
+      "tail marker",
+    ].join("\n");
+    const [result] = buildBootstrapContextFiles([makeFile({ content })], {
+      maxChars: 700,
+    });
+
+    expect(result?.content.length).toBeLessThanOrEqual(700);
+    expect(result?.content).toContain("[Policy digest from AGENTS.md]");
+    // The bullet is admitted by the structural check even today, but only the CJK
+    // alternation makes it high priority; the prose line is not a candidate at all
+    // without it.
+    expect(result?.content).toContain(mandatoryChineseBullet);
+    expect(result?.content).toContain(mandatoryChineseProse);
+  });
   it("keeps the quoted heartbeat example with its framing", () => {
     const frame = "Example heartbeat prompt:";
     const [result] = buildBootstrapContextFiles(
