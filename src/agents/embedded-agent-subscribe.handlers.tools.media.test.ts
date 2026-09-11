@@ -629,6 +629,51 @@ describe("handleToolExecutionEnd media emission", () => {
     expect(ctx.emitToolOutput).toHaveBeenCalledTimes(1);
     expect(ctx.state.pendingToolMediaUrls).toEqual(["/tmp/meeting.wav"]);
   });
+  it("queues dir_fetch local paths once the run supplies its trusted set", async () => {
+    const ctx = createMockContext({
+      shouldEmitToolOutput: true,
+      toolResultFormat: "plain",
+      trustedLocalMediaToolNames: new Set(["dir_fetch"]),
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "dir_fetch",
+      toolCallId: "tc-dir-1",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "Fetched 40 files (channel attaches first 25)" }],
+        details: { media: { mediaUrls: ["/tmp/run/a.png", "/tmp/run/b.png"] } },
+      },
+    });
+
+    expect(ctx.state.pendingToolMediaUrls).toEqual(["/tmp/run/a.png", "/tmp/run/b.png"]);
+  });
+
+  it("drops dir_fetch local paths when the run supplies no trusted set", async () => {
+    const ctx = createMockContext({
+      shouldEmitToolOutput: true,
+      toolResultFormat: "plain",
+      trustedLocalMediaToolNames: new Set(),
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "dir_fetch",
+      toolCallId: "tc-dir-2",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "Fetched 40 files (channel attaches first 25)" }],
+        details: { media: { mediaUrls: ["/tmp/run/a.png", "/tmp/run/b.png"] } },
+      },
+    });
+
+    // The reported defect: the summary text still says the channel attached
+    // them while nothing is queued.
+    expect(ctx.state.pendingToolMediaUrls).toEqual([]);
+    expect(ctx.emitToolOutput).toHaveBeenCalledTimes(1);
+  });
+
   it("queues structured media once for markdown verbose output", async () => {
     const ctx = await handleVerboseGeneratedImage("markdown");
 

@@ -147,6 +147,35 @@ function isExternalToolResult(result: unknown): boolean {
   return typeof details.mcpServer === "string" || typeof details.mcpTool === "string";
 }
 
+/**
+ * Exact raw tool names for this run that may carry local-media paths.
+ *
+ * Two sources, and only two. The core allowlist above, matched through the
+ * same normalization `isCoreToolResultMediaTrustedName` uses, so every tool
+ * trusted today stays trusted and this is not a widening for them. Plus
+ * bundled manifest tools whose contract marks them `trustedLocalMedia`, which
+ * is the seam that exists for exactly this and which nothing was reading.
+ *
+ * Raw names, because `filterToolResultMediaUrls` matches the name the tool
+ * emitted rather than its normalized policy name.
+ */
+export function collectTrustedLocalMediaToolNames(
+  tools: readonly { name?: string }[],
+  hasTrustedLocalMediaMeta: (tool: { name?: string }) => boolean,
+): Set<string> {
+  const names = new Set<string>();
+  for (const tool of tools) {
+    const name = (tool.name ?? "").trim();
+    if (!name) {
+      continue;
+    }
+    if (isCoreToolResultMediaTrustedName(name) || hasTrustedLocalMediaMeta(tool)) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
 function isToolResultMediaTrusted(
   toolName?: string,
   result?: unknown,

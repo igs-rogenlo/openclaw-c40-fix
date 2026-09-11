@@ -526,6 +526,34 @@ describe("prepareEmbeddedAttemptClientTools", () => {
     expect(result.clientToolDefs.map((tool) => tool.name)).toEqual(["client_probe"]);
   });
 
+  it("exposes the run's trusted local-media tool names from contract metadata", () => {
+    const catalogRef = seedCatalog("tool-search", TOOL_SEARCH_CONFIG);
+    const dirFetch = createStubTool("dir_fetch");
+    setPluginToolMeta(dirFetch as never, {
+      pluginId: "file-transfer",
+      optional: false,
+      trustedLocalMedia: true,
+    });
+    const unmarked = createStubTool("some_mcp_tool");
+    setPluginToolMeta(unmarked as never, {
+      pluginId: "some-mcp",
+      optional: false,
+    });
+    const exec = createStubTool("exec");
+
+    const result = prepare({
+      codeModeControlsEnabledForRun: false,
+      attemptConfig: CATALOGS_DISABLED_CONFIG,
+      toolSearchRuntimeConfig: CATALOGS_DISABLED_CONFIG,
+      catalogRef,
+      uncompactedEffectiveTools: [dirFetch, unmarked, exec],
+    });
+
+    // dir_fetch earns it from the bundled contract, exec from the core
+    // allowlist; an unmarked plugin tool earns nothing.
+    expect(result.trustedLocalMediaToolNames).toEqual(new Set(["dir_fetch", "exec"]));
+  });
+
   it("binds side-effect metadata to the concrete plugin tool owner", () => {
     const catalogRef = seedCatalog("tool-search", TOOL_SEARCH_CONFIG);
     const memoryStore = createStubTool("memory_store");

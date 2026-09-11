@@ -11,6 +11,7 @@ import { wrapToolWithAbortSignal } from "../../agent-tools.abort.js";
 import { resolveToolLoopDetectionConfig } from "../../agent-tools.js";
 import { isCodeModeExecTool } from "../../code-mode-control-tools.js";
 import { addClientToolsToCodeModeCatalog } from "../../code-mode.js";
+import { collectTrustedLocalMediaToolNames } from "../../embedded-agent-tool-media.js";
 import type { AgentTool } from "../../runtime/index.js";
 import {
   createToolDefinitionFromAgentTool,
@@ -121,6 +122,15 @@ export function prepareEmbeddedAttemptClientTools(params: {
       isPluginTool: (tool) =>
         Boolean(getPluginToolMeta(tool as Parameters<typeof getPluginToolMeta>[0])),
     });
+    // Derived from exact tool metadata, never from the whole builtin set: a
+    // registered name earns local-media trust only by being core-trusted
+    // already or by carrying the bundled contract's trustedLocalMedia mark.
+    const trustedLocalMediaToolNames = collectTrustedLocalMediaToolNames(
+      params.uncompactedEffectiveTools,
+      (tool) =>
+        getPluginToolMeta(tool as Parameters<typeof getPluginToolMeta>[0])?.trustedLocalMedia ===
+        true,
+    );
     const isReplaySafeTool = (tool: { name?: string }) =>
       isAgentToolReplaySafe(tool, params.replaySafetyOptions);
     const replaySafeTools = new Set(params.uncompactedEffectiveTools.filter(isReplaySafeTool));
@@ -198,6 +208,7 @@ export function prepareEmbeddedAttemptClientTools(params: {
       allCustomTools,
       builtinToolNames,
       coreBuiltinToolNames,
+      trustedLocalMediaToolNames,
       clientToolCallSlots,
       clientToolDefs,
       replaySafeToolNames,
@@ -222,6 +233,7 @@ export function prepareEmbeddedAttemptClientTools(params: {
       for (const key of [
         "builtinToolNames",
         "coreBuiltinToolNames",
+        "trustedLocalMediaToolNames",
         "replaySafeToolNames",
         "codeModeExecToolNames",
       ] as const) {

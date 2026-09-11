@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { isToolResultMediaTrusted } from "./embedded-agent-subscribe.tools.test-support.js";
 import {
+  collectTrustedLocalMediaToolNames,
   extractToolResultMediaArtifact,
   filterToolResultMediaUrls,
 } from "./embedded-agent-tool-media.js";
@@ -519,5 +520,68 @@ describe("extractToolResultMediaArtifact", () => {
         },
       }),
     ).toEqual(["https://example.com/screenshot.png"]);
+  });
+});
+
+describe("collectTrustedLocalMediaToolNames", () => {
+  const marked = new Set(["dir_fetch", "file_fetch"]);
+  const hasMark = (tool: { name?: string }) => marked.has(tool.name ?? "");
+
+  it("collects bundled contract tools alongside the core-trusted names", () => {
+    expect(
+      collectTrustedLocalMediaToolNames(
+        [{ name: "exec" }, { name: "dir_fetch" }, { name: "some_mcp_tool" }],
+        hasMark,
+      ),
+    ).toEqual(new Set(["exec", "dir_fetch"]));
+  });
+
+  it("excludes plugin tools that carry no trustedLocalMedia mark", () => {
+    expect(collectTrustedLocalMediaToolNames([{ name: "some_mcp_tool" }], hasMark)).toEqual(
+      new Set(),
+    );
+    expect(collectTrustedLocalMediaToolNames([{ name: "dir_list" }], hasMark)).toEqual(new Set());
+  });
+
+  it("ignores tools with no usable name", () => {
+    expect(collectTrustedLocalMediaToolNames([{ name: "  " }, {}], hasMark)).toEqual(new Set());
+  });
+
+  it("keeps dir_fetch local paths that the run-local set now covers", () => {
+    const names = collectTrustedLocalMediaToolNames(
+      [{ name: "exec" }, { name: "dir_fetch" }, { name: "some_mcp_tool" }],
+      hasMark,
+    );
+    // The defect: without the set, dir_fetch local paths are filtered to nothing
+    // while its summary text tells the model the channel attached them.
+    expect(
+      filterToolResultMediaUrls("dir_fetch", ["/tmp/run/report.png"], undefined, undefined),
+    ).toStrictEqual([]);
+    expect(
+      filterToolResultMediaUrls("dir_fetch", ["/tmp/run/report.png"], undefined, names),
+    ).toEqual(["/tmp/run/report.png"]);
+  });
+
+  it("does not widen local-media trust to unmarked tools in the same run", () => {
+    const names = collectTrustedLocalMediaToolNames(
+      [{ name: "exec" }, { name: "dir_fetch" }, { name: "some_mcp_tool" }],
+      hasMark,
+    );
+    expect(
+      filterToolResultMediaUrls("some_mcp_tool", ["/tmp/run/report.png"], undefined, names),
+    ).toStrictEqual([]);
+  });
+
+  it("keeps core tools trusted once the run supplies its exact set", () => {
+    const names = collectTrustedLocalMediaToolNames(
+      [{ name: "exec" }, { name: "read" }, { name: "dir_fetch" }],
+      hasMark,
+    );
+    expect(filterToolResultMediaUrls("exec", ["/tmp/out.png"], undefined, names)).toEqual([
+      "/tmp/out.png",
+    ]);
+    expect(filterToolResultMediaUrls("read", ["/tmp/out.png"], undefined, names)).toEqual([
+      "/tmp/out.png",
+    ]);
   });
 });

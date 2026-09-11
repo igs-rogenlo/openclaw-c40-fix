@@ -122,6 +122,7 @@ export function prepareEmbeddedAttemptStream(input: {
   sandboxSessionKey: string;
   builtinToolNames: ReadonlySet<string>;
   coreBuiltinToolNames?: ReadonlySet<string>;
+  trustedLocalMediaToolNames?: ReadonlySet<string>;
   replaySafeToolNames: ReadonlySet<string>;
   codeModeExecToolNames?: ReadonlySet<string>;
   sideEffectToolOwners?: ReadonlyMap<string, string>;
@@ -371,6 +372,9 @@ export function prepareEmbeddedAttemptStream(input: {
     agentId: input.hookAgentId,
     builtinToolNames: input.builtinToolNames,
     coreBuiltinToolNames: input.coreBuiltinToolNames,
+    ...(input.trustedLocalMediaToolNames
+      ? { trustedLocalMediaToolNames: input.trustedLocalMediaToolNames }
+      : {}),
     replaySafeToolNames: input.replaySafeToolNames,
     ...(input.codeModeExecToolNames ? { codeModeExecToolNames: input.codeModeExecToolNames } : {}),
     ...(input.sideEffectToolOwners ? { sideEffectToolOwners: input.sideEffectToolOwners } : {}),
