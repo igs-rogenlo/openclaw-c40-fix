@@ -173,6 +173,8 @@ const HOST_READ_TEXT_PLAIN_ALIASES = new Set([
   "text/markdown",
   "text/plain",
   "application/json",
+  "text/x-sql",
+  "application/sql",
   "application/yaml",
 ]);
 const HOST_READ_ALLOWED_DOCUMENT_MIMES = new Set([
