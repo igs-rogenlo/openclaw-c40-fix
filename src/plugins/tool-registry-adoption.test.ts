@@ -11,12 +11,16 @@ import {
 } from "../config/plugin-auto-enable.test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createPluginRuntimeStore } from "../plugin-sdk/runtime-store.js";
-import { createPluginRecord } from "./loader-records.js";
-import { getPluginInstance, getPluginValueInstance } from "./plugin-instance-scope.js";
-import { PluginInstance } from "./plugin-instance.js";
-import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { createHookRunner } from "./hooks.js";
+import { createPluginRecord } from "./loader-records.js";
+import {
+  getPluginInstance,
+  getPluginValueInstance,
+  type PluginInstanceHandle,
+} from "./plugin-instance-scope.js";
+import { PluginInstance } from "./plugin-instance.js";
 import { collectRegistryInvocationInstances } from "./plugin-invocation-scope.js";
+import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { PluginRegistryInspectionResources } from "./registry-inspection-resources.js";
 import {
   bindPluginRegistryGatewayOwner,
@@ -51,7 +55,7 @@ function setLoadContext(registry: PluginRegistry, config: OpenClawConfig) {
 }
 
 const runtimes = new Set<PluginRegistry>();
-const instances = new Set<PluginInstance>();
+const instances = new Set<PluginInstanceHandle>();
 afterEach(async () => {
   for (const runtime of runtimes) {
     markPluginRegistryRetired(runtime);
@@ -112,7 +116,7 @@ it("keeps discovery tools when the Gateway source, config, or lifetime does not 
   expect(adopt()).toBe(target);
 });
 
-it("requires complete tool identity sets and preserves repeated fallback order", () => {
+it("requires complete selected registrations and preserves repeated fallback order", () => {
   const { runtime, target, tool, adopt } = createAdoptionPair();
   const x = tool(["x"]);
   runtime.tools.push(tool(["y"]), x);
@@ -150,7 +154,7 @@ it("matches tools without entering unrelated plugin metadata", async () => {
   expect(adopt().tools).toEqual([donor, foreign]);
 });
 
-it("executes only the admitting Gateway's current service and skips unowned turns", async () => {
+it("executes selected tools on the admitting Gateway's current service and skips unowned turns", async () => {
   const config = { plugins: { allow: ["owner"], slots: { memory: "none" } } };
   const metadataSnapshot = createPluginMetadataSnapshot({
     config,
@@ -161,25 +165,27 @@ it("executes only the admitting Gateway's current service and skips unowned turn
     key: "tool-adoption-service",
     errorMessage: "service is not started",
   });
-  const create = (marker: string) => {
+  const create = (marker: string, toolNames = ["owner_tool"]) => {
     const builder = createTestPluginRegistry();
     const record = createPluginRecord({
       ...recordOptions,
-      contracts: { tools: ["owner_tool"] },
+      contracts: { tools: ["owner_tool", "unselected_tool"] },
     });
     const api = builder.createApi(record, { config });
     getPluginInstance(record)!.sourceDigest = "1".repeat(64);
     const call = vi.fn(() => marker);
-    api.registerTool(
-      () => ({
-        ...makeTool("owner_tool"),
-        label: "Owner",
-        async execute() {
-          return { content: [{ type: "text", text: store.getRuntime().call() }], details: {} };
-        },
-      }),
-      { names: ["owner_tool"] },
-    );
+    for (const name of toolNames) {
+      api.registerTool(
+        () => ({
+          ...makeTool(name),
+          label: "Owner",
+          async execute() {
+            return { content: [{ type: "text", text: store.getRuntime().call() }], details: {} };
+          },
+        }),
+        { names: [name] },
+      );
+    }
     api.registerService({
       id: "owner-service",
       start() {
@@ -193,7 +199,7 @@ it("executes only the admitting Gateway's current service and skips unowned turn
     setLoadContext(builder.registry, config);
     return { registry: builder.registry, instance: getPluginInstance(record)!, call };
   };
-  const a = create("Gateway A");
+  const a = create("Gateway A", ["unselected_tool", "owner_tool"]);
   // A request may retain a previous registry while its admitting owner publishes a successor.
   const requestRegistry = createEmptyPluginRegistry();
   setActivePluginRegistry(requestRegistry);
@@ -234,7 +240,7 @@ it("executes only the admitting Gateway's current service and skips unowned turn
     const owned = await withPluginRuntimeRegistryScope(requestRegistry, prepare);
     acquired.push(owned);
     assert("resources" in owned);
-    expect.soft(owned.registry.tools).toEqual(a.registry.tools);
+    expect.soft(owned.registry.tools).toEqual([a.registry.tools[1]]);
     expect.soft(a.instance.retainedWorkCount).toBeGreaterThan(0);
     const scope = owned.resources.createInvocationScope(owned.registry);
     try {
@@ -276,7 +282,12 @@ describe("coherent Gateway service owner", () => {
   const config: OpenClawConfig = {
     plugins: { entries: { owner: { enabled: true, hooks: { allowConversationAccess: true } } } },
   };
-  function create(ownerName: string, names: string[][] = [["owner_tool"]], hookCount = 1) {
+  function create(
+    ownerName: string,
+    names: string[][] = [["owner_tool"]],
+    hookCount = 1,
+    declaredNames = names.flatMap((group) => (group.length ? group : ["unnamed"])),
+  ) {
     const builder = createTestPluginRegistry();
     const record = createPluginRecord({
       id: "owner",
@@ -285,7 +296,7 @@ describe("coherent Gateway service owner", () => {
       enabled: true,
       configSchema: false,
       contracts: {
-        tools: [...new Set(names.flatMap((group) => (group.length ? group : ["unnamed"])))],
+        tools: [...new Set(declaredNames)],
       },
     });
     builder.registry.plugins.push(record);
@@ -299,21 +310,22 @@ describe("coherent Gateway service owner", () => {
     runtimes.add(builder.registry);
     const proofs = new Set<string>();
     const calls: string[] = [];
-    for (let i = 0; i < hookCount; i++)
+    for (let i = 0; i < hookCount; i++) {
       api.on("before_tool_call", (event) => {
         calls.push(ownerName);
         const proof = ownerName + ":" + String(event.params.marker);
         proofs.add(proof);
         return { params: { ...event.params, proof } };
       });
+    }
     api.registerHook(
-      "synthetic:event",
+      "session:synthetic",
       async () => {
         calls.push(ownerName + ":legacy");
       },
       { name: "synthetic-owner-hook" },
     );
-    for (const group of names)
+    for (const group of names) {
       api.registerTool(
         () => ({
           name: group[0] ?? "unnamed",
@@ -327,14 +339,19 @@ describe("coherent Gateway service owner", () => {
         }),
         { names: group },
       );
+    }
     expect(builder.registry.tools).toHaveLength(names.length);
     setPluginRuntimeLoadContext(builder.registry, createToolLoadContext(config, "/synthetic"));
     markPluginRegistryActive(builder.registry);
     return { registry: builder.registry, record, instance, calls };
   }
   function pair(localNames?: string[][], donorNames?: string[][], localHooks = 1, donorHooks = 1) {
-    const donor = create("donor", donorNames, donorHooks);
-    const local = create("local", localNames, localHooks);
+    const declaredNames = [
+      ...(localNames ?? [["owner_tool"]]),
+      ...(donorNames ?? [["owner_tool"]]),
+    ].flatMap((group) => (group.length ? group : ["unnamed"]));
+    const donor = create("donor", donorNames, donorHooks, declaredNames);
+    const local = create("local", localNames, localHooks, declaredNames);
     return {
       donor,
       local,
@@ -344,15 +361,18 @@ describe("coherent Gateway service owner", () => {
   async function run(registry: PluginRegistry, marker = "GWTEST_OWNER") {
     const result = await createHookRunner(registry, { catchErrors: false }).runBeforeToolCall(
       { toolName: "owner_tool", params: { marker } },
-      {},
+      { toolName: "owner_tool" },
     );
     const raw = registry.tools[0]!.factory({ config, workspaceDir: "/synthetic" });
-    if (!raw || Array.isArray(raw)) throw new Error("Expected one fixture tool");
+    if (!raw || Array.isArray(raw)) {
+      throw new Error("Expected one fixture tool");
+    }
     return raw.execute(marker, result?.params ?? { marker });
   }
-  it("keeps hook/tool private state with the Gateway service owner", async () => {
-    const { donor, local, adopt } = pair();
+  it("keeps selected hook/tool state with the Gateway service owner without adding donor tools", async () => {
+    const { donor, local, adopt } = pair([["owner_tool"]], [["owner_tool"], ["extra"]]);
     const selected = adopt();
+    expect(selected.tools).toHaveLength(1);
     expect(selected.tools[0]).toBe(donor.registry.tools[0]);
     expect(selected.plugins).toBe(local.registry.plugins);
     expect((await run(selected)).details).toMatchObject({ ownerName: "donor", accepted: true });
@@ -365,7 +385,6 @@ describe("coherent Gateway service owner", () => {
     [[[]], [["owner_tool"]]],
     [[["owner_tool"]], [[]]],
     [[["owner_tool"], ["extra"]], [["owner_tool"]]],
-    [[["owner_tool"]], [["owner_tool"], ["extra"]]],
     [[["owner_tool"], ["owner_tool"]], [["owner_tool"]]],
   ])("declines the entire plugin for incomplete or unnamed tool sets %j / %j", (locals, donors) => {
     const { local, adopt } = pair(locals, donors);
@@ -409,8 +428,9 @@ describe("coherent Gateway service owner", () => {
       const { donor, local, adopt } = pair(undefined, undefined, localHooks, donorHooks);
       const selected = adopt();
       expect(selected.typedHooks).toHaveLength(donorHooks);
-      if (donorHooks > 0)
+      if (donorHooks > 0) {
         expect((await run(selected)).details).toMatchObject({ ownerName: "donor", accepted: true });
+      }
       expect(local.calls).toEqual([]);
       expect(donor.calls).toHaveLength(donorHooks);
     },
@@ -426,13 +446,13 @@ describe("coherent Gateway service owner", () => {
   it.each(["local", "donor"] as const)(
     "closes retained hook callbacks when the %s instance retires",
     async (retired) => {
-      const fixture = pair();
+      const fixture = pair([["owner_tool"]], [["owner_tool"], ["extra"]]);
       const selected = fixture.adopt();
       await fixture[retired].instance.dispose();
       await expect(
         createHookRunner(selected, { catchErrors: false }).runBeforeToolCall(
           { toolName: "owner_tool", params: { marker: "GWTEST_RETIRED" } },
-          {},
+          { toolName: "owner_tool" },
         ),
       ).rejects.toThrow(/closed|retir|dispos|active|reload|disabled/i);
     },
@@ -445,8 +465,8 @@ describe("coherent Gateway service owner", () => {
     expect(selected.legacyInternalHooks).toHaveLength(1);
     expect(selected.hooks[0]!.entry).toEqual(donor.registry.hooks[0]!.entry);
     await selected.legacyInternalHooks[0]!.handler({
-      type: "synthetic",
-      action: "event",
+      type: "session",
+      action: "synthetic",
       sessionKey: "synthetic",
       timestamp: new Date(),
       messages: [],
@@ -463,8 +483,11 @@ describe("coherent Gateway service owner", () => {
     "declines an incompatible %s tool contract atomically",
     (field) => {
       const { donor, local, adopt } = pair();
-      if (field === "contextVersion") donor.registry.tools[0]!.contextVersion = 2;
-      else donor.registry.tools[0]!.declaredNames = new Set(["different"]);
+      if (field === "contextVersion") {
+        donor.registry.tools[0]!.contextVersion = 2;
+      } else {
+        donor.registry.tools[0]!.declaredNames = new Set(["different"]);
+      }
       expect(adopt()).toBe(local.registry);
     },
   );

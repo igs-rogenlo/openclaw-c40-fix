@@ -54,8 +54,8 @@ export function adoptRuntimeToolRegistrations(
     }
     const locals = groupByDeclaredIdentity(target.tools, pluginId);
     const donors = groupByDeclaredIdentity(runtime.tools, pluginId);
-    // A partial projection cannot split one registration's private hook/tool state.
-    if (!locals || !donors || locals.size !== donors.size) {
+    // Match complete selected registrations without adding donor-only tools.
+    if (!locals || !donors) {
       continue;
     }
     if (
@@ -100,7 +100,7 @@ function groupByDeclaredIdentity(
     }
     const names = [...new Set(entry.names)].toSorted();
     if (names.length === 0) {
-      return;
+      return undefined;
     }
     const declaredNames = entry.declaredNames ? [...entry.declaredNames].toSorted() : undefined;
     const identity = JSON.stringify([entry.contextVersion, entry.optional, names, declaredNames]);
