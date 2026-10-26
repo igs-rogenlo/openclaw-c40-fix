@@ -8,7 +8,7 @@ import {
   normalizeUniqueSingleOrTrimmedStringList,
   uniqueStrings,
 } from "@openclaw/normalization-core/string-normalization";
-import { getLoadedChannelPlugin } from "../channels/plugins/index.js";
+import { resolveChannelPluginRegistration } from "../channels/plugins/registry.js";
 import { resolveSessionConversation } from "../channels/plugins/session-conversation.js";
 import {
   markFrozenClawToolAllowPolicy,
@@ -544,7 +544,7 @@ export function resolveGroupToolPolicy(params: {
   }
   let plugin;
   try {
-    plugin = getLoadedChannelPlugin(channel);
+    plugin = resolveChannelPluginRegistration(channel, { loadedOnly: true })?.plugin;
   } catch {
     // Plugin lookup failure leaves the canonical config policy fallback in charge.
     plugin = undefined;
