@@ -1,13 +1,21 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import http, { type IncomingHttpHeaders } from "node:http";
-import type { AddressInfo } from "node:net";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
+import { buffer as readResponseBuffer } from "node:stream/consumers";
+import { deserialize } from "node:v8";
+import { expectDefined } from "@openclaw/normalization-core";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
+import {
+  closeHttpServer,
+  listenLoopback,
+} from "../../test/helpers/gateway-integration-fixtures.js";
 import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ReplyMediaAttachment } from "../auto-reply/reply-payload.js";
+import * as brokerReply from "../infra/sqlite-worker-broker-reply.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -21,11 +29,61 @@ import {
 } from "./managed-image-record-store.js";
 import type { GatewayClient } from "./server-methods/types.js";
 
-export type RequestResult = {
+type RequestResult = {
   statusCode: number;
   headers: IncomingHttpHeaders;
   body: Buffer;
 };
+
+export function interceptManagedImageMutationReplies(onReply: (commandType: string) => boolean) {
+  const commands = new WeakMap<object, string>();
+  const dispatch = brokerReply.dispatchSqliteWorkerJob;
+  const receive = brokerReply.receiveSqliteWorkerReply;
+  const dispatchSpy = vi
+    .spyOn(brokerReply, "dispatchSqliteWorkerJob")
+    .mockImplementation((slot, job, rejected) => {
+      if (job.request.type === "execute") {
+        const command: unknown = deserialize(job.request.input);
+        if (isRecord(command) && typeof command.type === "string") {
+          commands.set(job.request, command.type);
+        }
+      }
+      return dispatch(slot, job, rejected);
+    });
+  const replySpy = vi
+    .spyOn(brokerReply, "receiveSqliteWorkerReply")
+    .mockImplementation((slot, reply, owner) => {
+      if (slot.current?.request.type === "execute" && reply.ok && !reply.transfer && !reply.input) {
+        const command = commands.get(slot.current.request);
+        if (command && onReply(command)) {
+          return receive(slot, { ...reply, value: new Uint8Array([0]) }, owner);
+        }
+      }
+      return receive(slot, reply, owner);
+    });
+  return () => {
+    replySpy.mockRestore();
+    dispatchSpy.mockRestore();
+  };
+}
+
+export async function requestManagedImageHttp(
+  origin: string,
+  pathName: string,
+  method = "GET",
+  headers?: http.ClientRequestArgs["headers"],
+): Promise<RequestResult> {
+  const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
+    http
+      .get(`${origin}${pathName}`, { method, headers, agent: false }, resolve)
+      .on("error", reject);
+  });
+  return {
+    statusCode: response.statusCode ?? 0,
+    headers: response.headers,
+    body: await readResponseBuffer(response),
+  };
+}
 
 export const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnXcZ0AAAAASUVORK5CYII=";
@@ -105,11 +163,7 @@ export function requireBlock(
   blocks: readonly Record<string, unknown>[],
   index = 0,
 ): Record<string, unknown> {
-  const block = blocks[index];
-  if (!block) {
-    throw new Error(`expected block ${index}`);
-  }
-  return block;
+  return expectDefined(blocks[index], `block ${index}`);
 }
 
 export function requireAttachmentIdFromUrl(url: unknown): string {
@@ -125,10 +179,7 @@ export async function requireManagedOriginalPath(
   stateDir: string,
   attachmentId: string,
 ): Promise<string> {
-  const record = await readManagedImageRecord(attachmentId, stateDir);
-  if (!record) {
-    throw new Error(`expected managed image record ${attachmentId}`);
-  }
+  const record = expectDefined(await readManagedImageRecord(attachmentId, stateDir), attachmentId);
   return path.join(stateDir, "media", record.original.mediaSubdir, record.original.mediaId);
 }
 
@@ -142,27 +193,15 @@ export async function prepareManagedSessionStore(stateDir: string): Promise<stri
   closeOpenClawAgentDatabasesForTest();
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
   const storePath = path.join(stateDir, "sessions.sqlite");
-  const { replaceSessionEntrySync } = await import("../config/sessions/session-accessor.js");
-  replaceSessionEntrySync(
-    {
-      agentId: "main",
-      env,
-      sessionKey: "agent:main:main",
-      storePath,
-    },
-    { sessionId: "sess-1", updatedAt: Date.now() },
-  );
+  const scope = { agentId: "main", env, sessionKey: "agent:main:main", storePath };
+  await replaceTestSessionEntry(scope, { sessionId: "sess-1", updatedAt: Date.now() });
   closeOpenClawAgentDatabasesForTest();
   const { loadExactSessionEntryReadOnlyResult } =
     await import("../config/sessions/session-accessor.sqlite-entry-availability.js");
-  expect(
-    loadExactSessionEntryReadOnlyResult({
-      agentId: "main",
-      env,
-      sessionKey: "agent:main:main",
-      storePath,
-    }),
-  ).toMatchObject({ found: true, value: { sessionKey: "agent:main:main" } });
+  expect(loadExactSessionEntryReadOnlyResult(scope)).toMatchObject({
+    found: true,
+    value: { sessionKey: "agent:main:main" },
+  });
   return storePath;
 }
 
@@ -257,7 +296,7 @@ export async function createFixture(
   return { attachmentId, sessionKey, originalPath };
 }
 
-export async function requestManagedImageHttp(params: {
+export async function requestManagedImageWithHandler(params: {
   handleRequest: (typeof import("./managed-image-attachments.js"))["handleManagedOutgoingMediaHttpRequest"];
   stateDir: string;
   pathName: string;
@@ -282,43 +321,46 @@ export async function requestManagedImageHttp(params: {
     })();
   });
 
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo;
-
+  const origin = await listenLoopback(server);
   try {
-    const result = await new Promise<RequestResult>((resolve, reject) => {
-      const req = http.request(
-        {
-          host: "127.0.0.1",
-          port: address.port,
-          path: params.pathName,
-          method: params.method ?? "GET",
-          headers: params.headers,
-        },
-        (res) => {
-          void (async () => {
-            const chunks: Buffer[] = [];
-            for await (const chunk of res) {
-              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-            }
-            resolve({
-              statusCode: res.statusCode ?? 0,
-              headers: res.headers,
-              body: Buffer.concat(chunks),
-            });
-          })();
-        },
-      );
-      req.on("error", reject);
-      req.end();
-    });
-
+    const result = await requestManagedImageHttp(
+      origin,
+      params.pathName,
+      params.method,
+      params.headers,
+    );
     return { result, auth };
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
+    await closeHttpServer(server);
   }
+}
+
+export function assistantMessage(content: unknown) {
+  return { role: "assistant", content, __openclaw: { id: "msg-1" } };
+}
+
+export function mediaPath(fixture: { sessionKey: string; attachmentId: string }) {
+  return `/api/chat/media/outgoing/${encodeURIComponent(fixture.sessionKey)}/${fixture.attachmentId}/full`;
+}
+
+export function mediaMessage(fixture: Parameters<typeof mediaPath>[0], type = "image") {
+  const url = mediaPath(fixture);
+  return assistantMessage([{ type, url, openUrl: url }]);
+}
+
+export function expectManagedImageBlock(
+  blocks: Record<string, unknown>[],
+  alt: string,
+  secrets: string[],
+) {
+  expect(blocks).toHaveLength(1);
+  const block = requireBlock(blocks);
+  expect(block).toMatchObject({ type: "image", alt });
+  expect(block.url).toContain("/api/chat/media/outgoing/agent%3Amain%3Amain/");
+  expect(block.openUrl).toContain("/full");
+  expect(block.url).toBe(block.openUrl);
+  for (const secret of secrets) {
+    expect(JSON.stringify(block)).not.toContain(secret);
+  }
+  return requireAttachmentIdFromUrl(block.url);
 }
