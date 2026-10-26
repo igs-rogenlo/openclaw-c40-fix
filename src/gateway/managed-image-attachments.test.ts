@@ -57,10 +57,10 @@ import {
   requireAttachmentIdFromUrl,
   requireBlock,
   requireManagedOriginalPath,
+  requestManagedImageHttp,
   TINY_PNG_BASE64,
   usePreparedManagedImageState,
   writeSource,
-  type RequestResult,
 } from "./managed-image-attachments.test-support.js";
 import {
   attachManagedImageRecordsToMessage,
@@ -255,62 +255,10 @@ async function requestManagedImage(params: {
       ],
   );
 
-  const auth = { mode: "test" } as never;
-  const server = http.createServer((req, res) => {
-    void (async () => {
-      const handled = await handleManagedOutgoingImageHttpRequest(req, res, {
-        auth,
-        trustedProxies: ["127.0.0.1/32"],
-        allowRealIpFallback: false,
-        stateDir: params.stateDir,
-        clients: params.clients,
-      });
-      if (!handled) {
-        res.statusCode = 404;
-        res.end("unhandled");
-      }
-    })();
+  return await requestManagedImageHttp({
+    ...params,
+    handleRequest: handleManagedOutgoingImageHttpRequest,
   });
-
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address() as AddressInfo;
-
-  try {
-    const result = await new Promise<RequestResult>((resolve, reject) => {
-      const req = http.request(
-        {
-          host: "127.0.0.1",
-          port: address.port,
-          path: params.pathName,
-          method: params.method ?? "GET",
-          headers: params.headers,
-        },
-        (res) => {
-          void (async () => {
-            const chunks: Buffer[] = [];
-            for await (const chunk of res) {
-              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-            }
-            resolve({
-              statusCode: res.statusCode ?? 0,
-              headers: res.headers,
-              body: Buffer.concat(chunks),
-            });
-          })();
-        },
-      );
-      req.on("error", reject);
-      req.end();
-    });
-
-    return { result, auth };
-  } finally {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-  }
 }
 
 describe("handleManagedOutgoingImageHttpRequest", () => {
@@ -1252,6 +1200,54 @@ describe("createManagedOutgoingImageBlocks", () => {
       cwdSpy.mockRestore();
     }
   });
+
+  it.each([
+    { pathname: "/query.sql", headerMime: "text/plain", mimeType: "text/x-sql" },
+    { pathname: "/query", headerMime: "application/sql", mimeType: "application/sql" },
+  ])(
+    "fetches and serves SQL documents reported as $headerMime",
+    async ({ pathname, headerMime, mimeType }) => {
+      const body = Buffer.from("SELECT name FROM widgets;\n");
+      const upstream = http.createServer((_req, res) => {
+        res.setHeader("content-type", headerMime);
+        res.end(body);
+      });
+      await new Promise<void>((resolve) => {
+        upstream.listen(0, "127.0.0.1", resolve);
+      });
+      const address = upstream.address() as AddressInfo;
+      try {
+        await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+          const sourceUrl = `http://127.0.0.1:${address.port}${pathname}`;
+          const blocks = await withStoreRemoteFixture({ url: sourceUrl }, () =>
+            createManagedOutgoingImageBlocksActual({
+              sessionKey: "agent:main:main",
+              items: [{ url: sourceUrl, filename: "query.sql", trustedLocal: false }],
+              messageId: "msg-1",
+              stateDir,
+            }),
+          );
+          expect(blocks).toHaveLength(1);
+          const attachment = (requireBlock(blocks) as { attachment?: { url?: string } }).attachment;
+          expect(attachment).toMatchObject({ kind: "document", label: "query.sql", mimeType });
+          const { result } = await requestManagedImage({
+            stateDir,
+            pathName: attachment?.url ?? "",
+            authResponse: { authMethod: "token" },
+            transcriptMessages: [assistantMessage(blocks)],
+          });
+          expect(result.statusCode).toBe(200);
+          expect(result.headers["content-type"]).toBe(mimeType);
+          expect(result.headers["content-disposition"]).toContain('filename="query.sql"');
+          expect(result.body).toEqual(body);
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          upstream.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    },
+  );
 
   it("creates managed document attachment envelopes for trusted local files", async () => {
     const pdfPath = path.join(stateDir, "not-an-image.pdf");

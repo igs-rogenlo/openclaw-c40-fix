@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import type { IncomingHttpHeaders } from "node:http";
+import http, { type IncomingHttpHeaders } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect } from "vitest";
 import { createSolidPngBuffer } from "../../test/helpers/image-fixtures.js";
@@ -18,6 +19,7 @@ import {
   MANAGED_OUTGOING_ORIGINALS_SUBDIR,
   readManagedImageRecord,
 } from "./managed-image-record-store.js";
+import type { GatewayClient } from "./server-methods/types.js";
 
 export type RequestResult = {
   statusCode: number;
@@ -253,4 +255,70 @@ export async function createFixture(
     stateDir,
   );
   return { attachmentId, sessionKey, originalPath };
+}
+
+export async function requestManagedImageHttp(params: {
+  handleRequest: (typeof import("./managed-image-attachments.js"))["handleManagedOutgoingMediaHttpRequest"];
+  stateDir: string;
+  pathName: string;
+  method?: string;
+  headers?: http.ClientRequestArgs["headers"];
+  clients?: ReadonlySet<GatewayClient>;
+}) {
+  const auth = { mode: "test" } as never;
+  const server = http.createServer((req, res) => {
+    void (async () => {
+      const handled = await params.handleRequest(req, res, {
+        auth,
+        trustedProxies: ["127.0.0.1/32"],
+        allowRealIpFallback: false,
+        stateDir: params.stateDir,
+        clients: params.clients,
+      });
+      if (!handled) {
+        res.statusCode = 404;
+        res.end("unhandled");
+      }
+    })();
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+
+  try {
+    const result = await new Promise<RequestResult>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: address.port,
+          path: params.pathName,
+          method: params.method ?? "GET",
+          headers: params.headers,
+        },
+        (res) => {
+          void (async () => {
+            const chunks: Buffer[] = [];
+            for await (const chunk of res) {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            }
+            resolve({
+              statusCode: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks),
+            });
+          })();
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    return { result, auth };
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 }
