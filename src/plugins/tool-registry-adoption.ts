@@ -53,7 +53,7 @@ export function adoptRuntimeToolRegistrations(
       continue;
     }
     const locals = groupByDeclaredIdentity(target.tools, pluginId);
-    const donors = groupByDeclaredIdentity(runtime.tools, pluginId);
+    const donors = groupByDeclaredIdentity(runtime.tools, pluginId, true);
     // Match complete selected registrations without adding donor-only tools.
     if (!locals || !donors) {
       continue;
@@ -88,10 +88,11 @@ export function adoptRuntimeToolRegistrations(
   };
 }
 
-/** Unnamed registrations cannot establish a complete, comparable plugin tool set. */
+/** Selected unnamed registrations cannot establish a comparable tool identity. */
 function groupByDeclaredIdentity(
   tools: readonly PluginToolRegistration[],
   pluginId: string,
+  skipUnnamed = false,
 ): Map<string, PluginToolRegistration[]> | undefined {
   const groups = new Map<string, PluginToolRegistration[]>();
   for (const entry of tools) {
@@ -100,6 +101,9 @@ function groupByDeclaredIdentity(
     }
     const names = [...new Set(entry.names)].toSorted();
     if (names.length === 0) {
+      if (skipUnnamed) {
+        continue;
+      }
       return undefined;
     }
     const declaredNames = entry.declaredNames ? [...entry.declaredNames].toSorted() : undefined;

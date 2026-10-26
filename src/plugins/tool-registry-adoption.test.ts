@@ -154,129 +154,149 @@ it("matches tools without entering unrelated plugin metadata", async () => {
   expect(adopt().tools).toEqual([donor, foreign]);
 });
 
-it("executes selected tools on the admitting Gateway's current service and skips unowned turns", async () => {
-  const config = { plugins: { allow: ["owner"], slots: { memory: "none" } } };
-  const metadataSnapshot = createPluginMetadataSnapshot({
-    config,
-    workspaceDir,
-    manifestRegistry: makeRegistry([{ id: "owner", origin: "global", channels: [] }]),
-  });
-  const store = createPluginRuntimeStore<{ call: () => string }>({
-    key: "tool-adoption-service",
-    errorMessage: "service is not started",
-  });
-  const create = (marker: string, toolNames = ["owner_tool"]) => {
-    const builder = createTestPluginRegistry();
-    const record = createPluginRecord({
-      ...recordOptions,
-      contracts: { tools: ["owner_tool", "unselected_tool"] },
+it.each([false, true])(
+  "executes selected tools on the admitting Gateway's current service and skips unowned turns (unnamed donor: %s)",
+  async (unnamedDonor) => {
+    const config = { plugins: { allow: ["owner"], slots: { memory: "none" } } };
+    const metadataSnapshot = createPluginMetadataSnapshot({
+      config,
+      workspaceDir,
+      manifestRegistry: makeRegistry([{ id: "owner", origin: "global", channels: [] }]),
     });
-    const api = builder.createApi(record, { config });
-    getPluginInstance(record)!.sourceDigest = "1".repeat(64);
-    const call = vi.fn(() => marker);
-    for (const name of toolNames) {
-      api.registerTool(
-        () => ({
-          ...makeTool(name),
-          label: "Owner",
+    const store = createPluginRuntimeStore<{ call: () => string }>({
+      key: "tool-adoption-service",
+      errorMessage: "service is not started",
+    });
+    const create = (marker: string, toolNames = ["owner_tool"], includeUnnamed = false) => {
+      const builder = createTestPluginRegistry();
+      const record = createPluginRecord({
+        ...recordOptions,
+        contracts: { tools: ["owner_tool", "unselected_tool"] },
+      });
+      const api = builder.createApi(record, { config });
+      getPluginInstance(record)!.sourceDigest = "1".repeat(64);
+      const call = vi.fn(() => marker);
+      for (const name of toolNames) {
+        api.registerTool(
+          () => ({
+            ...makeTool(name),
+            label: "Owner",
+            async execute() {
+              return { content: [{ type: "text", text: store.getRuntime().call() }], details: {} };
+            },
+          }),
+          { names: [name] },
+        );
+      }
+      if (includeUnnamed) {
+        api.registerTool(() => ({
+          ...makeTool("unselected_tool"),
+          label: "Unselected",
           async execute() {
-            return { content: [{ type: "text", text: store.getRuntime().call() }], details: {} };
+            return { content: [], details: {} };
           },
-        }),
-        { names: [name] },
-      );
-    }
-    api.registerService({
-      id: "owner-service",
-      start() {
-        store.setRuntime({ call });
-      },
-      stop() {
-        store.clearRuntime();
-      },
-    });
-    builder.registry.plugins.push(record);
-    setLoadContext(builder.registry, config);
-    return { registry: builder.registry, instance: getPluginInstance(record)!, call };
-  };
-  const a = create("Gateway A", ["unselected_tool", "owner_tool"]);
-  // A request may retain a previous registry while its admitting owner publishes a successor.
-  const requestRegistry = createEmptyPluginRegistry();
-  setActivePluginRegistry(requestRegistry);
-  const ownerA = createPluginRegistryOwner(requestRegistry);
-  setActivePluginRegistry(a.registry);
-  ownerA.publish(a.registry);
-  let service: PluginServicesHandle | undefined;
-  const acquired: Awaited<ReturnType<typeof acquireAgentRuntimePluginRegistry>>[] = [];
-  const selected: ReturnType<typeof create>[] = [];
-  const prepare = () => {
-    const local = create("discovery");
-    selected.push(local);
-    const resources = new PluginRegistryInspectionResources(async () => {
-      await local.instance.dispose();
-    });
-    resources.attach(local.registry);
-    loaders.acquirePluginRegistryForInspection.mockResolvedValueOnce({
-      registry: local.registry,
-      release: () => resources.release(),
-    });
-    return acquireAgentRuntimePluginRegistry({
-      config,
-      workspaceDir,
-      metadataSnapshot,
-      allowGatewaySubagentBinding: true,
-    });
-  };
-  try {
-    await startPluginServices({
-      registry: a.registry,
-      config,
-      workspaceDir,
-      throwOnStartError: true,
-      onHandle: (handle) => {
-        service = handle;
-      },
-    });
-    const owned = await withPluginRuntimeRegistryScope(requestRegistry, prepare);
-    acquired.push(owned);
-    assert("resources" in owned);
-    expect.soft(owned.registry.tools).toEqual([a.registry.tools[1]]);
-    expect.soft(a.instance.retainedWorkCount).toBeGreaterThan(0);
-    const scope = owned.resources.createInvocationScope(owned.registry);
+        }));
+      }
+      api.registerService({
+        id: "owner-service",
+        start() {
+          store.setRuntime({ call });
+        },
+        stop() {
+          store.clearRuntime();
+        },
+      });
+      builder.registry.plugins.push(record);
+      setLoadContext(builder.registry, config);
+      return { registry: builder.registry, instance: getPluginInstance(record)!, call };
+    };
+    const a = create(
+      "Gateway A",
+      unnamedDonor ? ["owner_tool"] : ["unselected_tool", "owner_tool"],
+      unnamedDonor,
+    );
+    expect(a.registry.tools).toHaveLength(2);
+    expect(a.registry.tools.some((entry) => entry.names.length === 0)).toBe(unnamedDonor);
+    // A request may retain a previous registry while its admitting owner publishes a successor.
+    const requestRegistry = createEmptyPluginRegistry();
+    setActivePluginRegistry(requestRegistry);
+    const ownerA = createPluginRegistryOwner(requestRegistry);
+    setActivePluginRegistry(a.registry);
+    ownerA.publish(a.registry);
+    let service: PluginServicesHandle | undefined;
+    const acquired: Awaited<ReturnType<typeof acquireAgentRuntimePluginRegistry>>[] = [];
+    const selected: ReturnType<typeof create>[] = [];
+    const prepare = () => {
+      const local = create("discovery");
+      selected.push(local);
+      const resources = new PluginRegistryInspectionResources(async () => {
+        await local.instance.dispose();
+      });
+      resources.attach(local.registry);
+      loaders.acquirePluginRegistryForInspection.mockResolvedValueOnce({
+        registry: local.registry,
+        release: () => resources.release(),
+      });
+      return acquireAgentRuntimePluginRegistry({
+        config,
+        workspaceDir,
+        metadataSnapshot,
+        allowGatewaySubagentBinding: true,
+      });
+    };
     try {
-      const tool = scope.wrap(owned.registry.tools[0]!.factory)({ config, workspaceDir });
-      assert(tool && !Array.isArray(tool));
+      await startPluginServices({
+        registry: a.registry,
+        config,
+        workspaceDir,
+        throwOnStartError: true,
+        onHandle: (handle) => {
+          service = handle;
+        },
+      });
+      const owned = await withPluginRuntimeRegistryScope(requestRegistry, prepare);
+      acquired.push(owned);
+      assert("resources" in owned);
       expect
-        .soft(await tool.execute("owned-tool", {}))
-        .toMatchObject({ content: [{ type: "text", text: "Gateway A" }] });
-      expect.soft(a.call).toHaveBeenCalledOnce();
+        .soft(owned.registry.tools)
+        .toEqual([a.registry.tools.find((entry) => entry.names.includes("owner_tool"))]);
+      expect.soft(a.instance.retainedWorkCount).toBeGreaterThan(0);
+      const scope = owned.resources.createInvocationScope(owned.registry);
+      try {
+        const tool = scope.wrap(owned.registry.tools[0]!.factory)({ config, workspaceDir });
+        assert(tool && !Array.isArray(tool));
+        expect
+          .soft(await tool.execute("owned-tool", {}))
+          .toMatchObject({ content: [{ type: "text", text: "Gateway A" }] });
+        expect.soft(a.call).toHaveBeenCalledOnce();
+      } finally {
+        scope.release();
+      }
+      const unscoped = await prepare();
+      acquired.push(unscoped);
+      expect.soft(unscoped.registry.tools).toEqual(selected[1]!.registry.tools);
+      const ambiguous = createEmptyPluginRegistry();
+      bindPluginRegistryGatewayOwner(ambiguous, { current: () => a.registry });
+      bindPluginRegistryGatewayOwner(ambiguous, { current: () => createEmptyPluginRegistry() });
+      const unowned = await withPluginRuntimeRegistryScope(ambiguous, prepare);
+      acquired.push(unowned);
+      expect.soft(unowned.registry.tools).toEqual(selected[2]!.registry.tools);
     } finally {
-      scope.release();
-    }
-    const unscoped = await prepare();
-    acquired.push(unscoped);
-    expect.soft(unscoped.registry.tools).toEqual(selected[1]!.registry.tools);
-    const ambiguous = createEmptyPluginRegistry();
-    bindPluginRegistryGatewayOwner(ambiguous, { current: () => a.registry });
-    bindPluginRegistryGatewayOwner(ambiguous, { current: () => createEmptyPluginRegistry() });
-    const unowned = await withPluginRuntimeRegistryScope(ambiguous, prepare);
-    acquired.push(unowned);
-    expect.soft(unowned.registry.tools).toEqual(selected[2]!.registry.tools);
-  } finally {
-    for (const lease of acquired) {
-      if ("releaseRegistry" in lease) {
-        await lease.releaseRegistry();
-        lease.releaseWork();
+      for (const lease of acquired) {
+        if ("releaseRegistry" in lease) {
+          await lease.releaseRegistry();
+          lease.releaseWork();
+        }
+      }
+      await service?.stop({ strict: true });
+      await ownerA.close();
+      for (const local of selected) {
+        await local.instance.dispose();
       }
     }
-    await service?.stop({ strict: true });
-    await ownerA.close();
-    for (const local of selected) {
-      await local.instance.dispose();
-    }
-  }
-  expect(a.instance.retainedWorkCount).toBe(0);
-});
+    expect(a.instance.retainedWorkCount).toBe(0);
+  },
+);
 
 describe("coherent Gateway service owner", () => {
   const config: OpenClawConfig = {
@@ -383,6 +403,10 @@ describe("coherent Gateway service owner", () => {
   });
   it.each([
     [[[]], [["owner_tool"]]],
+    [
+      [["owner_tool"], []],
+      [["owner_tool"], []],
+    ],
     [[["owner_tool"]], [[]]],
     [[["owner_tool"], ["extra"]], [["owner_tool"]]],
     [[["owner_tool"], ["owner_tool"]], [["owner_tool"]]],
